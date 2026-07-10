@@ -3,7 +3,7 @@
 import { useChat } from '@ai-sdk/react';
 import { useEffect, useRef, useState } from 'react';
 import type { FileUIPart, UIMessage } from 'ai';
-import { DEFAULT_PERSONA_ID, PERSONAS, getPersona } from '@/lib/personas';
+import { DEFAULT_PERSONA_ID, getPersona, personasByCategory } from '@/lib/personas';
 
 const historyKey = (personaId: string) => `groq-chat-history-${personaId}`;
 const LEGACY_STORAGE_KEY = 'groq-chat-history';
@@ -42,6 +42,7 @@ export default function Chat() {
   const [pendingFiles, setPendingFiles] = useState<FileUIPart[]>([]);
   const [attaching, setAttaching] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hydratedRef = useRef(false);
@@ -77,6 +78,7 @@ export default function Chat() {
   }, [messages]);
 
   function selectPersona(id: string) {
+    setSidebarOpen(false);
     if (id === activePersonaId) return;
     setActivePersonaId(id);
     const saved = localStorage.getItem(historyKey(id));
@@ -168,37 +170,74 @@ export default function Chat() {
   const activePersona = getPersona(activePersonaId);
 
   return (
-    <div className="flex flex-col h-dvh bg-zinc-50 dark:bg-black">
-      <header className="border-b border-zinc-200 dark:border-zinc-800">
-        <div className="flex items-center justify-between px-4 py-3">
+    <div className="flex h-dvh bg-zinc-50 dark:bg-black">
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-20 bg-black/30 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <aside
+        className={`${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        } fixed inset-y-0 left-0 z-30 w-64 transform overflow-y-auto border-r border-zinc-200 bg-zinc-50 transition-transform duration-200 ease-in-out md:static md:translate-x-0 dark:border-zinc-800 dark:bg-black`}
+      >
+        <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
           <h1 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-            Groq Chat — {activePersona.emoji} {activePersona.label}
+            Groq Chat
           </h1>
+        </div>
+        <nav className="flex flex-col gap-4 p-3">
+          {personasByCategory().map(([category, personas]) => (
+            <div key={category}>
+              <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+                {category}
+              </div>
+              <div className="flex flex-col gap-1">
+                {personas.map((persona) => (
+                  <button
+                    key={persona.id}
+                    onClick={() => selectPersona(persona.id)}
+                    className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors ${
+                      persona.id === activePersonaId
+                        ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-black'
+                        : 'text-zinc-600 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    <span>{persona.emoji}</span>
+                    <span>{persona.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </nav>
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="text-zinc-500 hover:text-zinc-900 md:hidden dark:hover:text-zinc-100"
+              aria-label="Apri elenco professionisti"
+            >
+              ☰
+            </button>
+            <h2 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+              {activePersona.emoji} {activePersona.label}
+            </h2>
+          </div>
           <button
             onClick={clearHistory}
             className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
           >
             Cancella cronologia
           </button>
-        </div>
-        <div className="flex gap-2 overflow-x-auto px-4 pb-3">
-          {PERSONAS.map((persona) => (
-            <button
-              key={persona.id}
-              onClick={() => selectPersona(persona.id)}
-              className={`shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                persona.id === activePersonaId
-                  ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-black'
-                  : 'border-zinc-300 text-zinc-600 hover:border-zinc-500 dark:border-zinc-700 dark:text-zinc-400'
-              }`}
-            >
-              {persona.emoji} {persona.label}
-            </button>
-          ))}
-        </div>
-      </header>
+        </header>
 
-      <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-2xl flex-col gap-4 px-4 py-6">
           {messages.map((message) => (
             <div
@@ -323,6 +362,7 @@ export default function Chat() {
           </div>
         </div>
       </form>
+      </div>
     </div>
   );
 }
