@@ -9,11 +9,8 @@ import {
 import { getPersona } from '@/lib/personas';
 
 function hasImageAttachment(messages: UIMessage[]) {
-  const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user');
-  return (
-    lastUserMessage?.parts.some(
-      (part) => part.type === 'file' && part.mediaType?.startsWith('image/'),
-    ) ?? false
+  return messages.some((m) =>
+    m.parts.some((part) => part.type === 'file' && part.mediaType?.startsWith('image/')),
   );
 }
 

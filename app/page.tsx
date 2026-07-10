@@ -4,9 +4,14 @@ import { useChat } from '@ai-sdk/react';
 import { useEffect, useRef, useState } from 'react';
 import type { FileUIPart, UIMessage } from 'ai';
 import { DEFAULT_PERSONA_ID, getPersona, personasByCategory } from '@/lib/personas';
-
-const historyKey = (personaId: string) => `groq-chat-history-${personaId}`;
-const LEGACY_STORAGE_KEY = 'groq-chat-history';
+import {
+  type Chapter,
+  chapterTranscript,
+  getActiveChapterId as getStoredActiveChapterId,
+  loadChapters,
+  saveChapters,
+  setActiveChapterId as persistActiveChapterId,
+} from '@/lib/chapters';
 
 const DOC_EXTENSIONS = ['.pdf', '.docx', '.txt'];
 
@@ -39,6 +44,12 @@ function textToDataUrl(text: string) {
 export default function Chat() {
   const [input, setInput] = useState('');
   const [activePersonaId, setActivePersonaId] = useState(DEFAULT_PERSONA_ID);
+  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [activeChapterId, setActiveChapterIdState] = useState<string | null>(null);
+  const [chapterMenuOpen, setChapterMenuOpen] = useState(false);
+  const [referenceMenuOpen, setReferenceMenuOpen] = useState(false);
+  const [showNewChapterForm, setShowNewChapterForm] = useState(false);
+  const [newChapterName, setNewChapterName] = useState('');
   const [pendingFiles, setPendingFiles] = useState<FileUIPart[]>([]);
   const [attaching, setAttaching] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -49,29 +60,30 @@ export default function Chat() {
 
   const { messages, sendMessage, status, error, setMessages } = useChat();
 
+  // One-time hydration from localStorage (client-only external system) on mount.
   useEffect(() => {
-    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (legacy && !localStorage.getItem(historyKey(DEFAULT_PERSONA_ID))) {
-      localStorage.setItem(historyKey(DEFAULT_PERSONA_ID), legacy);
-      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    const loaded = loadChapters(DEFAULT_PERSONA_ID);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setChapters(loaded);
+    let chapterId = getStoredActiveChapterId(DEFAULT_PERSONA_ID);
+    if (!chapterId || !loaded.some((c) => c.id === chapterId)) {
+      chapterId = loaded[0]?.id ?? null;
     }
-
-    const saved = localStorage.getItem(historyKey(DEFAULT_PERSONA_ID));
-    if (saved) {
-      try {
-        setMessages(JSON.parse(saved) as UIMessage[]);
-      } catch {
-        // ignore corrupted history
-      }
-    }
+    setActiveChapterIdState(chapterId);
+    const chapter = loaded.find((c) => c.id === chapterId);
+    if (chapter) setMessages(chapter.messages);
     hydratedRef.current = true;
   }, [setMessages]);
 
   useEffect(() => {
-    if (hydratedRef.current) {
-      localStorage.setItem(historyKey(activePersonaId), JSON.stringify(messages));
-    }
-  }, [messages, activePersonaId]);
+    if (!hydratedRef.current || !activeChapterId) return;
+    setChapters((prev) => {
+      const updated = prev.map((c) => (c.id === activeChapterId ? { ...c, messages } : c));
+      saveChapters(activePersonaId, updated);
+      return updated;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -81,12 +93,72 @@ export default function Chat() {
     setSidebarOpen(false);
     if (id === activePersonaId) return;
     setActivePersonaId(id);
-    const saved = localStorage.getItem(historyKey(id));
-    try {
-      setMessages(saved ? (JSON.parse(saved) as UIMessage[]) : []);
-    } catch {
-      setMessages([]);
+    const loaded = loadChapters(id);
+    setChapters(loaded);
+    let chapterId = getStoredActiveChapterId(id);
+    if (!chapterId || !loaded.some((c) => c.id === chapterId)) {
+      chapterId = loaded[0]?.id ?? null;
     }
+    setActiveChapterIdState(chapterId);
+    const chapter = loaded.find((c) => c.id === chapterId);
+    setMessages(chapter ? chapter.messages : []);
+    setPendingFiles([]);
+  }
+
+  function selectChapter(id: string) {
+    setActiveChapterIdState(id);
+    persistActiveChapterId(activePersonaId, id);
+    const chapter = chapters.find((c) => c.id === id);
+    setMessages(chapter ? chapter.messages : []);
+    setChapterMenuOpen(false);
+  }
+
+  function createChapter() {
+    const title = newChapterName.trim();
+    if (!title) return;
+    const newChapter: Chapter = {
+      id: crypto.randomUUID(),
+      title,
+      createdAt: Date.now(),
+      messages: [],
+    };
+    const updated = [...chapters, newChapter];
+    setChapters(updated);
+    saveChapters(activePersonaId, updated);
+    setActiveChapterIdState(newChapter.id);
+    persistActiveChapterId(activePersonaId, newChapter.id);
+    setMessages([]);
+    setNewChapterName('');
+    setShowNewChapterForm(false);
+    setChapterMenuOpen(false);
+  }
+
+  function deleteChapter(id: string) {
+    if (!confirm('Eliminare questo capitolo e tutta la sua cronologia?')) return;
+    const updated = chapters.filter((c) => c.id !== id);
+    setChapters(updated);
+    saveChapters(activePersonaId, updated);
+    if (activeChapterId === id) {
+      const next = updated[0]?.id ?? null;
+      setActiveChapterIdState(next);
+      if (next) persistActiveChapterId(activePersonaId, next);
+      setMessages(next ? (updated.find((c) => c.id === next)?.messages ?? []) : []);
+    }
+  }
+
+  function attachChapterReference(chapter: Chapter) {
+    const transcript = chapterTranscript(chapter);
+    if (!transcript) return;
+    setPendingFiles((prev) => [
+      ...prev,
+      {
+        type: 'file',
+        filename: `capitolo-${chapter.title}.txt`,
+        mediaType: 'text/plain',
+        url: textToDataUrl(transcript),
+      },
+    ]);
+    setReferenceMenuOpen(false);
   }
 
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -153,6 +225,7 @@ export default function Chat() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!activeChapterId) return;
     if (!input.trim() && pendingFiles.length === 0) return;
     sendMessage(
       { text: input, files: pendingFiles.length > 0 ? pendingFiles : undefined },
@@ -164,10 +237,11 @@ export default function Chat() {
 
   function clearHistory() {
     setMessages([]);
-    localStorage.removeItem(historyKey(activePersonaId));
   }
 
   const activePersona = getPersona(activePersonaId);
+  const activeChapter = chapters.find((c) => c.id === activeChapterId) ?? null;
+  const otherChapters = chapters.filter((c) => c.id !== activeChapterId);
 
   return (
     <div className="flex h-dvh bg-zinc-50 dark:bg-black">
@@ -216,152 +290,258 @@ export default function Chat() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-          <div className="flex items-center gap-2">
+        <header className="border-b border-zinc-200 dark:border-zinc-800">
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="text-zinc-500 hover:text-zinc-900 md:hidden dark:hover:text-zinc-100"
+                aria-label="Apri elenco professionisti"
+              >
+                ☰
+              </button>
+              <h2 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                {activePersona.emoji} {activePersona.label}
+              </h2>
+            </div>
             <button
-              onClick={() => setSidebarOpen(true)}
-              className="text-zinc-500 hover:text-zinc-900 md:hidden dark:hover:text-zinc-100"
-              aria-label="Apri elenco professionisti"
+              onClick={clearHistory}
+              disabled={!activeChapterId}
+              className="text-xs text-zinc-500 hover:text-zinc-900 disabled:opacity-40 dark:hover:text-zinc-100"
             >
-              ☰
+              Cancella cronologia
             </button>
-            <h2 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-              {activePersona.emoji} {activePersona.label}
-            </h2>
           </div>
-          <button
-            onClick={clearHistory}
-            className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
-          >
-            Cancella cronologia
-          </button>
+
+          <div className="relative border-t border-zinc-100 px-4 py-2 dark:border-zinc-900">
+            <button
+              onClick={() => setChapterMenuOpen((v) => !v)}
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            >
+              📑 {activeChapter ? activeChapter.title : 'Nessun capitolo'} ▾
+            </button>
+
+            {chapterMenuOpen && (
+              <div className="absolute left-4 top-10 z-10 w-64 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+                {chapters.map((chapter) => (
+                  <div
+                    key={chapter.id}
+                    className={`flex items-center justify-between rounded-lg px-2 py-1.5 text-sm ${
+                      chapter.id === activeChapterId
+                        ? 'bg-zinc-100 dark:bg-zinc-800'
+                        : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    <button
+                      onClick={() => selectChapter(chapter.id)}
+                      className="flex-1 truncate text-left text-zinc-800 dark:text-zinc-200"
+                    >
+                      {chapter.title}
+                    </button>
+                    <button
+                      onClick={() => deleteChapter(chapter.id)}
+                      className="ml-2 text-zinc-400 hover:text-red-600"
+                      title="Elimina capitolo"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+
+                {showNewChapterForm ? (
+                  <div className="mt-2 flex gap-1">
+                    <input
+                      autoFocus
+                      value={newChapterName}
+                      onChange={(e) => setNewChapterName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && createChapter()}
+                      placeholder="Nome del capitolo..."
+                      className="flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+                    />
+                    <button
+                      onClick={createChapter}
+                      className="rounded-lg bg-zinc-900 px-2 py-1 text-xs text-white dark:bg-zinc-100 dark:text-black"
+                    >
+                      Crea
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowNewChapterForm(true)}
+                    className="mt-1 w-full rounded-lg px-2 py-1.5 text-left text-sm text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                  >
+                    + Nuovo capitolo
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </header>
 
         <main className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-2xl flex-col gap-4 px-4 py-6">
-          {messages.map((message) => (
-            <div
-              key={message.id}
-              className={`flex ${
-                message.role === 'user' ? 'justify-end' : 'justify-start'
-              }`}
-            >
+          <div className="mx-auto flex max-w-2xl flex-col gap-4 px-4 py-6">
+            {!activeChapter && (
+              <div className="rounded-lg bg-zinc-100 px-4 py-3 text-sm text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
+                Crea un capitolo per iniziare a scrivere con {activePersona.label}.
+              </div>
+            )}
+            {messages.map((message) => (
               <div
-                className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm ${
-                  message.role === 'user'
-                    ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-black'
-                    : 'bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
+                key={message.id}
+                className={`flex ${
+                  message.role === 'user' ? 'justify-end' : 'justify-start'
                 }`}
               >
-                {message.parts.map((part, i) => {
-                  if (part.type === 'text') {
-                    return <span key={`${message.id}-${i}`}>{part.text}</span>;
-                  }
-                  if (isImagePart(part) && part.type === 'file') {
-                    return (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        key={`${message.id}-${i}`}
-                        src={part.url}
-                        alt={part.filename}
-                        className="mt-2 max-h-48 rounded-lg"
-                      />
-                    );
-                  }
-                  if (isDocPart(part) && part.type === 'file') {
-                    return (
-                      <div
-                        key={`${message.id}-${i}`}
-                        className="mt-2 inline-flex items-center gap-1 rounded-lg bg-black/10 px-2 py-1 text-xs dark:bg-white/10"
-                      >
-                        📄 {part.filename}
-                      </div>
-                    );
-                  }
-                  return null;
-                })}
-              </div>
-            </div>
-          ))}
-          {status === 'submitted' && (
-            <div className="flex justify-start">
-              <div className="rounded-2xl bg-zinc-200 px-4 py-2 text-sm text-zinc-500 dark:bg-zinc-800">
-                ...
-              </div>
-            </div>
-          )}
-          {error && (
-            <div className="rounded-lg bg-red-100 px-4 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
-              Errore: {error.message}
-            </div>
-          )}
-          <div ref={bottomRef} />
-        </div>
-      </main>
-
-      <form
-        onSubmit={handleSubmit}
-        className="border-t border-zinc-200 dark:border-zinc-800 p-4"
-      >
-        <div className="mx-auto max-w-2xl">
-          {attachError && (
-            <div className="mb-2 text-xs text-red-600 dark:text-red-400">
-              {attachError}
-            </div>
-          )}
-          {pendingFiles.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-2">
-              {pendingFiles.map((file, i) => (
                 <div
-                  key={`${file.filename}-${i}`}
-                  className="flex items-center gap-1 rounded-lg bg-zinc-200 px-2 py-1 text-xs dark:bg-zinc-800"
+                  className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm ${
+                    message.role === 'user'
+                      ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-black'
+                      : 'bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
+                  }`}
                 >
-                  {file.mediaType?.startsWith('image/') ? '🖼️' : '📄'} {file.filename}
-                  <button
-                    type="button"
-                    onClick={() => removePendingFile(i)}
-                    className="ml-1 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
-                  >
-                    ✕
-                  </button>
+                  {message.parts.map((part, i) => {
+                    if (part.type === 'text') {
+                      return <span key={`${message.id}-${i}`}>{part.text}</span>;
+                    }
+                    if (isImagePart(part) && part.type === 'file') {
+                      return (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          key={`${message.id}-${i}`}
+                          src={part.url}
+                          alt={part.filename}
+                          className="mt-2 max-h-48 rounded-lg"
+                        />
+                      );
+                    }
+                    if (isDocPart(part) && part.type === 'file') {
+                      return (
+                        <div
+                          key={`${message.id}-${i}`}
+                          className="mt-2 inline-flex items-center gap-1 rounded-lg bg-black/10 px-2 py-1 text-xs dark:bg-white/10"
+                        >
+                          📄 {part.filename}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })}
                 </div>
-              ))}
-            </div>
-          )}
-          <div className="flex gap-2">
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileSelect}
-              accept="image/*,.pdf,.docx,.txt"
-              multiple
-              className="hidden"
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={attaching}
-              title="Allega documento o immagine"
-              className="rounded-full border border-zinc-300 px-3 py-2 text-sm disabled:opacity-40 dark:border-zinc-700"
-            >
-              {attaching ? '...' : '📎'}
-            </button>
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Scrivi un messaggio..."
-              className="flex-1 rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-            />
-            <button
-              type="submit"
-              disabled={status === 'submitted' || status === 'streaming' || attaching}
-              className="rounded-full bg-zinc-900 px-5 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-black"
-            >
-              Invia
-            </button>
+              </div>
+            ))}
+            {status === 'submitted' && (
+              <div className="flex justify-start">
+                <div className="rounded-2xl bg-zinc-200 px-4 py-2 text-sm text-zinc-500 dark:bg-zinc-800">
+                  ...
+                </div>
+              </div>
+            )}
+            {error && (
+              <div className="rounded-lg bg-red-100 px-4 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+                Errore: {error.message}
+              </div>
+            )}
+            <div ref={bottomRef} />
           </div>
-        </div>
-      </form>
+        </main>
+
+        <form
+          onSubmit={handleSubmit}
+          className="border-t border-zinc-200 dark:border-zinc-800 p-4"
+        >
+          <div className="mx-auto max-w-2xl">
+            {attachError && (
+              <div className="mb-2 text-xs text-red-600 dark:text-red-400">
+                {attachError}
+              </div>
+            )}
+            {pendingFiles.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {pendingFiles.map((file, i) => (
+                  <div
+                    key={`${file.filename}-${i}`}
+                    className="flex items-center gap-1 rounded-lg bg-zinc-200 px-2 py-1 text-xs dark:bg-zinc-800"
+                  >
+                    {file.mediaType?.startsWith('image/') ? '🖼️' : '📄'} {file.filename}
+                    <button
+                      type="button"
+                      onClick={() => removePendingFile(i)}
+                      className="ml-1 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+                accept="image/*,.pdf,.docx,.txt"
+                multiple
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={attaching || !activeChapterId}
+                title="Allega documento o immagine"
+                className="rounded-full border border-zinc-300 px-3 py-2 text-sm disabled:opacity-40 dark:border-zinc-700"
+              >
+                {attaching ? '...' : '📎'}
+              </button>
+
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setReferenceMenuOpen((v) => !v)}
+                  disabled={!activeChapterId || otherChapters.length === 0}
+                  title="Allega un capitolo precedente come riferimento"
+                  className="rounded-full border border-zinc-300 px-3 py-2 text-sm disabled:opacity-40 dark:border-zinc-700"
+                >
+                  📖
+                </button>
+                {referenceMenuOpen && (
+                  <div className="absolute bottom-12 left-0 z-10 w-64 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+                    {otherChapters.map((chapter) => (
+                      <button
+                        key={chapter.id}
+                        type="button"
+                        onClick={() => attachChapterReference(chapter)}
+                        className="block w-full truncate rounded-lg px-2 py-1.5 text-left text-sm text-zinc-800 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                      >
+                        {chapter.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={
+                  activeChapterId
+                    ? 'Scrivi un messaggio...'
+                    : 'Crea prima un capitolo dal menu sopra'
+                }
+                disabled={!activeChapterId}
+                className="flex-1 rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm outline-none focus:border-zinc-500 disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+              />
+              <button
+                type="submit"
+                disabled={
+                  status === 'submitted' || status === 'streaming' || attaching || !activeChapterId
+                }
+                className="rounded-full bg-zinc-900 px-5 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-black"
+              >
+                Invia
+              </button>
+            </div>
+          </div>
+        </form>
       </div>
     </div>
   );
