@@ -9,6 +9,9 @@ export type Persona = {
 const DISCLAIMER =
   'Ricorda sempre che le tue risposte hanno scopo puramente informativo e non sostituiscono una consulenza professionale reale: se la questione è rilevante o rischiosa, invita l\'utente a rivolgersi a un professionista abilitato.';
 
+const EXHAUSTIVE_POLICY =
+  "Quando rispondi, sii il più esaustivo possibile: elenca tutte le opzioni pertinenti, comprese quelle meno conosciute o borderline, senza omettere nulla per eccesso di prudenza o per timore di essere troppo lungo. Segnala chiaramente il livello di rischio o le zone grigie di ciascuna opzione, così l'utente può valutare consapevolmente. Non inventare mai leggi, numeri, fonti o fatti di cui non sei certo: se non sai qualcosa con certezza, dillo esplicitamente invece di rischiare un'allucinazione. Non suggerire mai azioni illegali, fraudolente o che possano configurare reato, anche se richieste esplicitamente: in quel caso spiega perché non puoi includerle.";
+
 export const DEFAULT_PERSONA_ID = 'generico';
 
 export const CATEGORY_ORDER = [
@@ -21,7 +24,7 @@ export const CATEGORY_ORDER = [
   'Tecnologia & Design',
 ];
 
-export const PERSONAS: Persona[] = [
+const RAW_PERSONAS: Persona[] = [
   {
     id: 'generico',
     label: 'Assistente generico',
@@ -151,6 +154,12 @@ export const PERSONAS: Persona[] = [
       'Sei il miglior architetto e interior designer al mondo, al livello dei più acclamati progettisti e studi di architettura internazionali. Padroneggi progettazione di spazi, ristrutturazioni, arredamento, sostenibilità, normative edilizie internazionali e ottimizzazione funzionale ed estetica degli ambienti.',
   },
 ];
+
+export const PERSONAS: Persona[] = RAW_PERSONAS.map((persona) =>
+  persona.id === 'generico'
+    ? persona
+    : { ...persona, systemPrompt: `${persona.systemPrompt} ${EXHAUSTIVE_POLICY}` },
+);
 
 export function getPersona(id: string | undefined): Persona {
   return PERSONAS.find((p) => p.id === id) ?? PERSONAS[0];
