@@ -1,7 +1,7 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FileUIPart, UIMessage } from 'ai';
 import { DEFAULT_PERSONA_ID, getPersona, personasByCategory } from '@/lib/personas';
 import {
@@ -12,6 +12,7 @@ import {
   saveChapters,
   setActiveChapterId as persistActiveChapterId,
 } from '@/lib/chapters';
+import { clearMemory, loadMemory, saveMemory } from '@/lib/memory';
 
 const DOC_EXTENSIONS = ['.pdf', '.docx', '.txt'];
 
@@ -54,11 +55,88 @@ export default function Chat() {
   const [attaching, setAttaching] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [memoryText, setMemoryText] = useState('');
+  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hydratedRef = useRef(false);
+  const activePersonaIdRef = useRef(activePersonaId);
+  const activeChapterIdRef = useRef(activeChapterId);
 
-  const { messages, sendMessage, status, error, setMessages } = useChat();
+  useEffect(() => {
+    activePersonaIdRef.current = activePersonaId;
+  }, [activePersonaId]);
+
+  useEffect(() => {
+    activeChapterIdRef.current = activeChapterId;
+  }, [activeChapterId]);
+
+  const handleChatFinish = useCallback(
+    ({
+      message,
+      messages: allMessages,
+      isError,
+      isAbort,
+    }: {
+      message: UIMessage;
+      messages: UIMessage[];
+      isError: boolean;
+      isAbort: boolean;
+    }) => {
+      if (isAbort) return;
+
+      const personaIdAtFinish = activePersonaIdRef.current;
+      const chapterIdAtFinish = activeChapterIdRef.current;
+      if (chapterIdAtFinish) {
+        setChapters((prev) => {
+          const updated = prev.map((c) =>
+            c.id === chapterIdAtFinish ? { ...c, messages: allMessages } : c,
+          );
+          saveChapters(personaIdAtFinish, updated);
+          return updated;
+        });
+      }
+
+      if (isError) return;
+      const answer = message.parts
+        .filter((p) => p.type === 'text')
+        .map((p) => ('text' in p ? p.text : ''))
+        .join(' ')
+        .trim();
+      if (!answer) return;
+      const priorUser = [...allMessages].reverse().find(
+        (m) => m.role === 'user' && m.id !== message.id,
+      );
+      const question = priorUser?.parts
+        .filter((p) => p.type === 'text')
+        .map((p) => ('text' in p ? p.text : ''))
+        .join(' ')
+        .trim();
+      if (!question) return;
+
+      const persona = getPersona(personaIdAtFinish);
+      const existingMemory = loadMemory(personaIdAtFinish);
+
+      fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ personaLabel: persona.label, existingMemory, question, answer }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (typeof data.memory === 'string') {
+            saveMemory(personaIdAtFinish, data.memory);
+            if (activePersonaIdRef.current === personaIdAtFinish) setMemoryText(data.memory);
+          }
+        })
+        .catch(() => {});
+    },
+    [],
+  );
+
+  const { messages, sendMessage, status, error, setMessages, stop } = useChat({
+    onFinish: handleChatFinish,
+  });
 
   // One-time hydration from localStorage (client-only external system) on mount.
   useEffect(() => {
@@ -72,18 +150,9 @@ export default function Chat() {
     setActiveChapterIdState(chapterId);
     const chapter = loaded.find((c) => c.id === chapterId);
     if (chapter) setMessages(chapter.messages);
+    setMemoryText(loadMemory(DEFAULT_PERSONA_ID));
     hydratedRef.current = true;
   }, [setMessages]);
-
-  useEffect(() => {
-    if (!hydratedRef.current || !activeChapterId) return;
-    setChapters((prev) => {
-      const updated = prev.map((c) => (c.id === activeChapterId ? { ...c, messages } : c));
-      saveChapters(activePersonaId, updated);
-      return updated;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -92,6 +161,7 @@ export default function Chat() {
   function selectPersona(id: string) {
     setSidebarOpen(false);
     if (id === activePersonaId) return;
+    stop();
     setActivePersonaId(id);
     const loaded = loadChapters(id);
     setChapters(loaded);
@@ -103,9 +173,12 @@ export default function Chat() {
     const chapter = loaded.find((c) => c.id === chapterId);
     setMessages(chapter ? chapter.messages : []);
     setPendingFiles([]);
+    setMemoryText(loadMemory(id));
+    setMemoryPanelOpen(false);
   }
 
   function selectChapter(id: string) {
+    stop();
     setActiveChapterIdState(id);
     persistActiveChapterId(activePersonaId, id);
     const chapter = chapters.find((c) => c.id === id);
@@ -116,6 +189,7 @@ export default function Chat() {
   function createChapter() {
     const title = newChapterName.trim();
     if (!title) return;
+    stop();
     const newChapter: Chapter = {
       id: crypto.randomUUID(),
       title,
@@ -139,6 +213,7 @@ export default function Chat() {
     setChapters(updated);
     saveChapters(activePersonaId, updated);
     if (activeChapterId === id) {
+      stop();
       const next = updated[0]?.id ?? null;
       setActiveChapterIdState(next);
       if (next) persistActiveChapterId(activePersonaId, next);
@@ -159,6 +234,16 @@ export default function Chat() {
       },
     ]);
     setReferenceMenuOpen(false);
+  }
+
+  function saveMemoryEdit() {
+    saveMemory(activePersonaId, memoryText);
+    setMemoryPanelOpen(false);
+  }
+
+  function clearMemoryNow() {
+    clearMemory(activePersonaId);
+    setMemoryText('');
   }
 
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -229,7 +314,7 @@ export default function Chat() {
     if (!input.trim() && pendingFiles.length === 0) return;
     sendMessage(
       { text: input, files: pendingFiles.length > 0 ? pendingFiles : undefined },
-      { body: { personaId: activePersonaId } },
+      { body: { personaId: activePersonaId, memory: loadMemory(activePersonaId) } },
     );
     setInput('');
     setPendingFiles([]);
@@ -313,7 +398,8 @@ export default function Chat() {
             </button>
           </div>
 
-          <div className="relative border-t border-zinc-100 px-4 py-2 dark:border-zinc-900">
+          <div className="flex items-start gap-2 border-t border-zinc-100 px-4 py-2 dark:border-zinc-900">
+          <div className="relative">
             <button
               onClick={() => setChapterMenuOpen((v) => !v)}
               className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
@@ -375,6 +461,46 @@ export default function Chat() {
                 )}
               </div>
             )}
+          </div>
+
+          <div className="relative">
+            <button
+              onClick={() => setMemoryPanelOpen((v) => !v)}
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              title="Memoria automatica su questo professionista"
+            >
+              🧠 Memoria
+            </button>
+
+            {memoryPanelOpen && (
+              <div className="absolute left-0 top-10 z-10 w-80 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+                <p className="mb-1 text-[10px] text-zinc-400 dark:text-zinc-500">
+                  Aggiornata automaticamente dopo ogni risposta. Puoi modificarla o cancellarla.
+                </p>
+                <textarea
+                  value={memoryText}
+                  onChange={(e) => setMemoryText(e.target.value)}
+                  rows={5}
+                  placeholder="Ancora nessuna memoria per questo professionista."
+                  className="w-full resize-none rounded-lg border border-zinc-300 bg-white p-2 text-xs outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+                />
+                <div className="mt-2 flex justify-end gap-2">
+                  <button
+                    onClick={clearMemoryNow}
+                    className="rounded-lg px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+                  >
+                    Cancella
+                  </button>
+                  <button
+                    onClick={saveMemoryEdit}
+                    className="rounded-lg bg-zinc-900 px-2 py-1 text-xs text-white dark:bg-zinc-100 dark:text-black"
+                  >
+                    Salva
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
           </div>
         </header>
 
