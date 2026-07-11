@@ -134,9 +134,18 @@ export default function Chat() {
     [],
   );
 
-  const { messages, sendMessage, status, error, setMessages, stop } = useChat({
+  const { messages, sendMessage, status, error, setMessages, stop, clearError } = useChat({
     onFinish: handleChatFinish,
   });
+  const [retryCooldown, setRetryCooldown] = useState(false);
+
+  useEffect(() => {
+    if (!error) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRetryCooldown(true);
+    const timer = setTimeout(() => setRetryCooldown(false), 3000);
+    return () => clearTimeout(timer);
+  }, [error]);
 
   // One-time hydration from localStorage (client-only external system) on mount.
   useEffect(() => {
@@ -162,6 +171,7 @@ export default function Chat() {
     setSidebarOpen(false);
     if (id === activePersonaId) return;
     stop();
+    if (error) clearError();
     setActivePersonaId(id);
     const loaded = loadChapters(id);
     setChapters(loaded);
@@ -179,6 +189,7 @@ export default function Chat() {
 
   function selectChapter(id: string) {
     stop();
+    if (error) clearError();
     setActiveChapterIdState(id);
     persistActiveChapterId(activePersonaId, id);
     const chapter = chapters.find((c) => c.id === id);
@@ -190,6 +201,7 @@ export default function Chat() {
     const title = newChapterName.trim();
     if (!title) return;
     stop();
+    if (error) clearError();
     const newChapter: Chapter = {
       id: crypto.randomUUID(),
       title,
@@ -214,6 +226,7 @@ export default function Chat() {
     saveChapters(activePersonaId, updated);
     if (activeChapterId === id) {
       stop();
+    if (error) clearError();
       const next = updated[0]?.id ?? null;
       setActiveChapterIdState(next);
       if (next) persistActiveChapterId(activePersonaId, next);
@@ -312,6 +325,7 @@ export default function Chat() {
     e.preventDefault();
     if (!activeChapterId) return;
     if (!input.trim() && pendingFiles.length === 0) return;
+    if (error) clearError();
     sendMessage(
       { text: input, files: pendingFiles.length > 0 ? pendingFiles : undefined },
       { body: { personaId: activePersonaId, memory: loadMemory(activePersonaId) } },
@@ -514,8 +528,8 @@ export default function Chat() {
             {messages.map((message) => (
               <div
                 key={message.id}
-                className={`flex ${
-                  message.role === 'user' ? 'justify-end' : 'justify-start'
+                className={`flex flex-col ${
+                  message.role === 'user' ? 'items-end' : 'items-start'
                 }`}
               >
                 <div
@@ -553,6 +567,13 @@ export default function Chat() {
                     return null;
                   })}
                 </div>
+                {message.role === 'assistant' &&
+                  (message.metadata as { usedFallback?: boolean } | undefined)?.usedFallback && (
+                    <div className="mt-1 text-[10px] text-amber-600 dark:text-amber-500">
+                      ⚠️ Modello principale non disponibile al momento, risposta generata con un
+                      modello di riserva.
+                    </div>
+                  )}
               </div>
             ))}
             {status === 'submitted' && (
@@ -560,11 +581,6 @@ export default function Chat() {
                 <div className="rounded-2xl bg-zinc-200 px-4 py-2 text-sm text-zinc-500 dark:bg-zinc-800">
                   ...
                 </div>
-              </div>
-            )}
-            {error && (
-              <div className="rounded-lg bg-red-100 px-4 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
-                Errore: {error.message}
               </div>
             )}
             <div ref={bottomRef} />
@@ -576,6 +592,21 @@ export default function Chat() {
           className="border-t border-zinc-200 dark:border-zinc-800 p-4"
         >
           <div className="mx-auto max-w-2xl">
+            {error && (
+              <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-red-100 px-3 py-2 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
+                <span>
+                  Errore: {error.message}
+                  {retryCooldown && ' — riprova tra un attimo'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => clearError()}
+                  className="shrink-0 text-red-700 hover:underline dark:text-red-300"
+                >
+                  Chiudi
+                </button>
+              </div>
+            )}
             {attachError && (
               <div className="mb-2 text-xs text-red-600 dark:text-red-400">
                 {attachError}
@@ -659,7 +690,11 @@ export default function Chat() {
               <button
                 type="submit"
                 disabled={
-                  status === 'submitted' || status === 'streaming' || attaching || !activeChapterId
+                  status === 'submitted' ||
+                  status === 'streaming' ||
+                  attaching ||
+                  !activeChapterId ||
+                  retryCooldown
                 }
                 className="rounded-full bg-zinc-900 px-5 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-black"
               >
