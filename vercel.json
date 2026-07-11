@@ -9,6 +9,15 @@
     },
     "app/api/memory/route.ts": {
       "maxDuration": 15
+    },
+    "app/api/cron/refresh-norme/route.ts": {
+      "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/refresh-norme",
+      "schedule": "0 3 * * 0"
+    }
+  ]
 }
