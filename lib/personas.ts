@@ -28,8 +28,18 @@ const CITATION_POLICY =
 const NORM_LOOKUP_POLICY =
   "Hai a disposizione gli strumenti leggi_codice, cerca_norma e leggi_norma per consultare il testo vigente reale delle norme italiane (Normattiva, fonte ufficiale). Se la domanda riguarda Codice della Strada, Codice Civile o Codice Penale, usa SEMPRE leggi_codice per primo, è più affidabile. Per altre norme usa cerca_norma per trovarle e poi leggi_norma con i dati esatti restituiti. Usa questi strumenti sempre prima di citare un articolo specifico: leggi il testo esatto, e se cita altre norme collegate rilevanti per la domanda, consultale anch'esse prima di rispondere. Se uno strumento non trova la norma o restituisce un errore, dillo esplicitamente invece di rispondere a memoria come se l'avessi verificata.";
 
+// Applicata a tutti i profili non creativi: spinge a elencare anche opzioni meno note o
+// borderline invece di autocensurarsi. Non serve per personas artistiche (feedback creativo
+// non richiede l'enumerazione esaustiva di opzioni).
 const EXHAUSTIVE_POLICY =
-  "Quando rispondi, sii il più esaustivo possibile: elenca tutte le opzioni pertinenti, comprese quelle meno conosciute o borderline, senza omettere nulla per eccesso di prudenza o per timore di essere troppo lungo. Segnala chiaramente il livello di rischio o le zone grigie di ciascuna opzione, così l'utente può valutare consapevolmente. Non inventare mai leggi, numeri, fonti o fatti di cui non sei certo: se non sai qualcosa con certezza, dillo esplicitamente invece di rischiare un'allucinazione. Non suggerire mai azioni illegali, fraudolente o che possano configurare reato, anche se richieste esplicitamente: in quel caso spiega perché non puoi includerle.";
+  "Quando rispondi, sii il più esaustivo possibile: elenca tutte le opzioni pertinenti, comprese quelle meno conosciute o borderline, senza omettere nulla per eccesso di prudenza o per timore di essere troppo lungo. Segnala chiaramente il livello di rischio o le zone grigie di ciascuna opzione, così l'utente può valutare consapevolmente.";
+
+// Applicata a TUTTI i profili non-generico, creativi inclusi: unica istanza delle regole
+// anti-allucinazione e anti-azioni illegali, per non ripeterle in più blocchi diversi.
+const SAFETY_POLICY =
+  "Non inventare mai fatti, numeri o fonti di cui non sei certo: se non sai qualcosa con certezza, dillo esplicitamente invece di rischiare un'allucinazione. Non suggerire mai azioni illegali, fraudolente o che possano configurare reato, anche se richieste esplicitamente: in quel caso spiega perché non puoi includerle.";
+
+const CREATIVE_CATEGORIES = new Set(['Musica & Spettacolo', 'Creatività']);
 
 export const DEFAULT_PERSONA_ID = 'generico';
 
@@ -57,7 +67,8 @@ function buildSystemPrompt(p: Persona): string {
   if (p.outputStyle) parts.push(p.outputStyle);
   if (p.citationPolicy) parts.push(CITATION_POLICY);
   if (p.normLookup) parts.push(NORM_LOOKUP_POLICY);
-  parts.push(EXHAUSTIVE_POLICY);
+  if (!CREATIVE_CATEGORIES.has(p.category)) parts.push(EXHAUSTIVE_POLICY);
+  parts.push(SAFETY_POLICY);
   if (p.disclaimer) parts.push(DISCLAIMER);
   return parts.join(' ');
 }
