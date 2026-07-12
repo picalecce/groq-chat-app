@@ -5,6 +5,7 @@ import {
   tool,
   stepCountIs,
   APICallError,
+  RetryError,
   UIMessage,
   ModelMessage,
   ToolSet,
@@ -26,6 +27,14 @@ function hasImageAttachment(messages: UIMessage[]) {
 }
 
 function isRetryableError(error: unknown): boolean {
+  // streamText/generateText ritentano già da soli lo STESSO modello (maxRetries) prima di
+  // arrendersi: se falliscono tutti i tentativi, avvolgono l'ultimo errore in un RetryError,
+  // un tipo diverso da APICallError. Senza questo controllo il fallback su un altro modello
+  // non scattava mai per un errore che aveva già esaurito i retry interni (es. quota
+  // giornaliera esaurita), che è esattamente il caso in cui serve di più.
+  if (RetryError.isInstance(error)) {
+    return isRetryableError(error.lastError);
+  }
   return APICallError.isInstance(error) && error.isRetryable;
 }
 
@@ -38,7 +47,9 @@ async function generateTextWithFallback(
   let lastError: unknown;
   for (const model of models) {
     try {
-      const result = await generateText({ ...opts, model });
+      // maxRetries basso: se un modello fallisce conviene passare subito al successivo
+      // della catena piuttosto che perdere tempo ritentando lo stesso modello saturo.
+      const result = await generateText({ maxRetries: 1, ...opts, model });
       return { result, model };
     } catch (err) {
       lastError = err;
@@ -69,7 +80,7 @@ async function streamTextWithFallback(
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     const isLast = i === models.length - 1;
-    const result = streamText({ ...opts, model });
+    const result = streamText({ maxRetries: 1, ...opts, model });
     const reader = result.stream.getReader();
 
     const buffered: unknown[] = [];
