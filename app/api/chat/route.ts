@@ -329,7 +329,7 @@ export async function POST(req: Request) {
     const critiqueMessages: ModelMessage[] = [
       ...modelMessages,
       { role: 'assistant', content: draft.text },
-      { role: 'user', content: SELF_CRITIQUE_INSTRUCTION },
+      { role: 'user', content: persona.selfCritiqueInstruction ?? SELF_CRITIQUE_INSTRUCTION },
     ];
 
     // Riparte dal modello che ha appena risposto, per evitare di ritentare
