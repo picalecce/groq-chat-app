@@ -60,6 +60,7 @@ export default function Chat() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hydratedRef = useRef(false);
+  const lastSubmitAtRef = useRef(0);
   const activePersonaIdRef = useRef(activePersonaId);
   const activeChapterIdRef = useRef(activeChapterId);
 
@@ -324,7 +325,15 @@ export default function Chat() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!activeChapterId) return;
+    // Un Invio nella casella di testo attiva comunque il submit del form anche se il
+    // pulsante "Invia" è disabilitato: senza questi controlli, premere Invio più volte
+    // di seguito (o rapidissimamente) mentre una richiesta è già in corso crea messaggi
+    // duplicati, perché lo stato React non fa in tempo ad aggiornarsi tra un tasto e l'altro.
+    if (status !== 'ready') return;
+    const now = Date.now();
+    if (now - lastSubmitAtRef.current < 800) return;
     if (!input.trim() && pendingFiles.length === 0) return;
+    lastSubmitAtRef.current = now;
     if (error) clearError();
     sendMessage(
       { text: input, files: pendingFiles.length > 0 ? pendingFiles : undefined },
