@@ -162,6 +162,72 @@ async function streamTextWithFallback(
 const SELF_CRITIQUE_INSTRUCTION =
   'Rivedi criticamente la tua risposta precedente: controlla errori, allucinazioni, riferimenti normativi inventati e lacune. Poi fornisci solo la risposta finale corretta e completa, senza elencare separatamente gli errori trovati.';
 
+type MechanicalChecks = {
+  bannedWords: string[];
+  overloadWords?: string[];
+  overloadMax?: number;
+};
+
+// Il self-critique è un giudizio del modello su se stesso: verificato più volte che NON
+// è affidabile per far rispettare regole fisse come una lista di parole vietate o un
+// limite di saturazione tematica (il modello lascia passare violazioni reali con
+// regolarità). Questo controllo è deterministico e non dipende dal giudizio del modello.
+function scanMechanicalViolations(text: string, checks: MechanicalChecks): string[] {
+  const violations: string[] = [];
+  const lower = text.toLowerCase();
+
+  for (const word of checks.bannedWords) {
+    const escaped = word.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`\\b${escaped}\\w*`, 'i').test(lower)) {
+      violations.push(`parola vietata "${word}"`);
+    }
+  }
+
+  if (checks.overloadWords?.length) {
+    const max = checks.overloadMax ?? 3;
+    let total = 0;
+    const found: string[] = [];
+    for (const word of checks.overloadWords) {
+      const escaped = word.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const matches = lower.match(new RegExp(`\\b${escaped}\\w*`, 'gi'));
+      if (matches?.length) {
+        total += matches.length;
+        found.push(`${word} (${matches.length}x)`);
+      }
+    }
+    if (total > max) {
+      violations.push(
+        `una singola famiglia tematica satura il testo (${found.join(', ')}, ${total} occorrenze totali, soglia ${max})`,
+      );
+    }
+  }
+
+  return violations;
+}
+
+// Costruisce uno stream compatibile con toUIMessageStream a partire da un testo già
+// completo, per riusare la stessa pipeline di risposta anche quando il testo finale
+// arriva da generateText (non-streaming) invece che da streamText.
+function textToFakeStream(text: string): ReadableStream {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue({ type: 'start' });
+      controller.enqueue({ type: 'start-step' });
+      controller.enqueue({ type: 'text-start', id: 'txt-0' });
+      controller.enqueue({ type: 'text-delta', id: 'txt-0', text });
+      controller.enqueue({ type: 'text-end', id: 'txt-0' });
+      controller.enqueue({ type: 'finish-step' });
+      controller.enqueue({
+        type: 'finish',
+        finishReason: 'stop',
+        rawFinishReason: undefined,
+        totalUsage: { inputTokens: undefined, outputTokens: undefined, totalTokens: undefined },
+      });
+      controller.close();
+    },
+  });
+}
+
 const normLookupTools: ToolSet = {
   leggi_codice: tool({
     description:
@@ -335,6 +401,56 @@ export async function POST(req: Request) {
     // Riparte dal modello che ha appena risposto, per evitare di ritentare
     // inutilmente quello che sappiamo essere già saturo in questa richiesta.
     const orderedModels = [draftModel, ...models.filter((m) => m !== draftModel)];
+
+    if (persona.mechanicalChecks) {
+      // Il self-critique è un giudizio del modello su se stesso: verificato più volte
+      // che lascia passare violazioni reali (parole vietate, saturazione tematica) con
+      // regolarità. Per queste regole fisse serve un controllo deterministico, che
+      // richiede il testo completo prima di poterlo scansionare: niente streaming
+      // diretto in questo ramo, il costo in reattività è il prezzo di un controllo
+      // vero invece che solo dichiarato.
+      const { result: reviewed, model: reviewedModel } = await generateTextWithFallback(
+        orderedModels,
+        { model: orderedModels[0], system: systemPrompt, messages: critiqueMessages, tools, stopWhen },
+      );
+
+      let finalText = reviewed.text;
+      let usedFallback = draftModel !== models[0] || reviewedModel !== orderedModels[0];
+
+      const violations = scanMechanicalViolations(finalText, persona.mechanicalChecks);
+      if (violations.length > 0) {
+        console.warn('[chat] controllo meccanico ha trovato violazioni, riparo', violations);
+        const repairMessages: ModelMessage[] = [
+          ...critiqueMessages,
+          { role: 'assistant', content: finalText },
+          {
+            role: 'user',
+            content: `Il testo che hai appena scritto viola ancora le tue stesse regole, in modo verificabile: ${violations.join('; ')}. Riscrivi SOLO le righe coinvolte sostituendole con immagini concrete diverse e coerenti, lasciando tutto il resto identico. Fornisci di nuovo entrambi i blocchi completi (Lyrics e Style).`,
+          },
+        ];
+        // Se la riparazione stessa fallisce (es. tutti i modelli della catena esauriti),
+        // meglio restituire il testo già rivisto con le violazioni residue che perdere
+        // tutto e mostrare un errore: l'utente riceve comunque una risposta.
+        try {
+          const { result: repaired, model: repairedModel } = await generateTextWithFallback(
+            orderedModels,
+            { model: orderedModels[0], system: systemPrompt, messages: repairMessages, tools, stopWhen },
+          );
+          finalText = repaired.text;
+          usedFallback = usedFallback || repairedModel !== orderedModels[0];
+        } catch (err) {
+          console.error('[chat] riparazione fallita, restituisco il testo rivisto senza riparazione', err);
+        }
+      }
+
+      return createUIMessageStreamResponse({
+        stream: toUIMessageStream({
+          stream: textToFakeStream(finalText),
+          messageMetadata: ({ part }) => (part.type === 'finish' ? { usedFallback } : undefined),
+        }),
+      });
+    }
+
     const { stream, usedFallback: draftFallbackForFinalCall } = await streamTextWithFallback(
       orderedModels,
       {
