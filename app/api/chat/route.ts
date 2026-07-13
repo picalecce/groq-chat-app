@@ -38,18 +38,33 @@ function isRetryableError(error: unknown): boolean {
   return APICallError.isInstance(error) && error.isRetryable;
 }
 
+// I modelli gpt-oss di Groq supportano reasoning_effort (quanto il modello "ragiona"
+// prima di rispondere): alzarlo migliora sensibilmente il rispetto di regole complesse.
+// Llama non supporta il parametro, quindi va applicato solo ai modelli giusti.
+function withReasoningEffort<T extends { providerOptions?: unknown }>(
+  opts: T,
+  model: ChatModel,
+  reasoningEffort?: string,
+): T {
+  if (!reasoningEffort || !model.modelId.includes('gpt-oss')) return opts;
+  return { ...opts, providerOptions: { groq: { reasoningEffort } } };
+}
+
 // Prova i modelli in ordine; passa al successivo solo su errori transitori
 // (rate limit, timeout, 5xx). Usato per generateText (il draft del self-critique).
 async function generateTextWithFallback(
   models: ChatModel[],
   opts: Parameters<typeof generateText>[0],
+  reasoningEffort?: string,
 ): Promise<{ result: Awaited<ReturnType<typeof generateText>>; model: ChatModel }> {
   let lastError: unknown;
   for (const model of models) {
     try {
       // maxRetries basso: se un modello fallisce conviene passare subito al successivo
       // della catena piuttosto che perdere tempo ritentando lo stesso modello saturo.
-      const result = await generateText({ maxRetries: 1, ...opts, model });
+      const result = await generateText(
+        withReasoningEffort({ maxRetries: 1, ...opts, model }, model, reasoningEffort),
+      );
       return { result, model };
     } catch (err) {
       lastError = err;
@@ -75,12 +90,15 @@ const STREAM_PREAMBLE_TYPES = new Set(['start', 'start-step']);
 async function streamTextWithFallback(
   models: ChatModel[],
   opts: Parameters<typeof streamText>[0],
+  reasoningEffort?: string,
 ): Promise<{ stream: ReadableStream; model: ChatModel; usedFallback: boolean }> {
   let lastError: unknown;
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     const isLast = i === models.length - 1;
-    const result = streamText({ maxRetries: 1, ...opts, model });
+    const result = streamText(
+      withReasoningEffort({ maxRetries: 1, ...opts, model }, model, reasoningEffort),
+    );
     const reader = result.stream.getReader();
 
     const buffered: unknown[] = [];
@@ -369,28 +387,38 @@ export async function POST(req: Request) {
     : basePrompt;
 
   const isVision = hasImageAttachment(messages);
+  const baseModelIds = [
+    process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile',
+    process.env.GROQ_FALLBACK_MODEL ?? 'openai/gpt-oss-120b',
+  ];
+  // Per i profili dove il rispetto di regole complesse è tutto (es. Songwriter),
+  // il modello con ragionamento esplicito diventa il primario e llama la riserva:
+  // verificato in sessione che gpt-oss-120b segue le istruzioni molto meglio.
   const modelIds = isVision
     ? [process.env.GROQ_VISION_MODEL ?? 'meta-llama/llama-4-scout-17b-16e-instruct']
-    : Array.from(
-        new Set([
-          process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile',
-          process.env.GROQ_FALLBACK_MODEL ?? 'openai/gpt-oss-120b',
-        ]),
-      );
+    : Array.from(new Set(persona.preferReasoningModel ? [...baseModelIds].reverse() : baseModelIds));
   const models = modelIds.map((id) => groq(id));
+  // 'medium' e non 'high': verificato dal vivo che con 'high' il modello consuma tutto
+  // il budget nel ragionamento e restituisce testo finale vuoto (2 volte su 2 sulla
+  // chiamata di riparazione); tutti i risultati buoni della sessione erano a 'medium'.
+  const reasoningEffort = persona.preferReasoningModel ? 'medium' : undefined;
   const modelMessages = await convertToModelMessages(messages);
 
   const tools = persona.normLookup && process.env.DATABASE_URL ? normLookupTools : undefined;
   const stopWhen = tools ? stepCountIs(6) : undefined;
 
   if (persona.selfCritique) {
-    const { result: draft, model: draftModel } = await generateTextWithFallback(models, {
-      model: models[0],
-      system: systemPrompt,
-      messages: modelMessages,
-      tools,
-      stopWhen,
-    });
+    const { result: draft, model: draftModel } = await generateTextWithFallback(
+      models,
+      {
+        model: models[0],
+        system: systemPrompt,
+        messages: modelMessages,
+        tools,
+        stopWhen,
+      },
+      reasoningEffort,
+    );
 
     const critiqueMessages: ModelMessage[] = [
       ...modelMessages,
@@ -412,9 +440,12 @@ export async function POST(req: Request) {
       const { result: reviewed, model: reviewedModel } = await generateTextWithFallback(
         orderedModels,
         { model: orderedModels[0], system: systemPrompt, messages: critiqueMessages, tools, stopWhen },
+        reasoningEffort,
       );
 
-      let finalText = reviewed.text;
+      // I modelli con ragionamento possono restituire testo vuoto (tutta la generazione
+      // finita nel canale di reasoning): mai sostituire un testo valido con niente.
+      let finalText = reviewed.text.trim() ? reviewed.text : draft.text;
       let usedFallback = draftModel !== models[0] || reviewedModel !== orderedModels[0];
 
       const violations = scanMechanicalViolations(finalText, persona.mechanicalChecks);
@@ -435,9 +466,14 @@ export async function POST(req: Request) {
           const { result: repaired, model: repairedModel } = await generateTextWithFallback(
             orderedModels,
             { model: orderedModels[0], system: systemPrompt, messages: repairMessages, tools, stopWhen },
+            reasoningEffort,
           );
-          finalText = repaired.text;
-          usedFallback = usedFallback || repairedModel !== orderedModels[0];
+          if (repaired.text.trim()) {
+            finalText = repaired.text;
+            usedFallback = usedFallback || repairedModel !== orderedModels[0];
+          } else {
+            console.warn('[chat] riparazione ha restituito testo vuoto, tengo il testo precedente');
+          }
         } catch (err) {
           console.error('[chat] riparazione fallita, restituisco il testo rivisto senza riparazione', err);
         }
@@ -460,6 +496,7 @@ export async function POST(req: Request) {
         tools,
         stopWhen,
       },
+      reasoningEffort,
     );
     // "usedFallback" deve riflettere l'intero scambio (bozza + revisione), non solo
     // se QUESTA chiamata ha dovuto ritentare: se la bozza aveva già scartato il
@@ -476,13 +513,17 @@ export async function POST(req: Request) {
     });
   }
 
-  const { stream, usedFallback } = await streamTextWithFallback(models, {
-    model: models[0],
-    system: systemPrompt,
-    messages: modelMessages,
-    tools,
-    stopWhen,
-  });
+  const { stream, usedFallback } = await streamTextWithFallback(
+    models,
+    {
+      model: models[0],
+      system: systemPrompt,
+      messages: modelMessages,
+      tools,
+      stopWhen,
+    },
+    reasoningEffort,
+  );
 
   return createUIMessageStreamResponse({
     stream: toUIMessageStream({

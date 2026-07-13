@@ -21,6 +21,8 @@ export type Persona = {
   normLookup?: boolean;
   /** Esempi originali (few-shot) che dimostrano concretamente lo standard qualitativo atteso. */
   examples?: string;
+  /** Usa come primario il modello con ragionamento esplicito (gpt-oss) invece di llama: più lento ma molto più affidabile nel rispettare regole complesse. */
+  preferReasoningModel?: boolean;
   /** Controllo deterministico post-generazione: il self-critique da solo non è affidabile su regole fisse. */
   mechanicalChecks?: {
     /** Parole singole vietate: anche una sola occorrenza fa scattare una riscrittura. */
@@ -258,6 +260,7 @@ const RAW_PERSONAS: Persona[] = [
     selfCritique: true,
     selfCritiqueInstruction:
       "Rileggi la bozza appena scritta e verifica punto per punto, senza dirlo esplicitamente nella risposta finale: 1) hai scelto attivamente l'approccio a frammenti/dialogo con un dispositivo strutturale, oppure quello introspettivo a metafora unica sostenuta - o sei ricaduto di default sulla strofa/ritornello descrittivo generico senza che gli altri due fossero davvero inadatti al tema? Se sì, riscrivi da uno dei due approcci principali. 2) ogni ritornello ripetuto è davvero diverso dalla volta precedente (nuovo dettaglio, righe che espandono l'idea, o angolazione), non identico parola per parola? 3) ci sono parole vietate (cuore, stelle, lacrime, fuoco, pioggia, notte, silenzio) o immagini prive di senso? 4) è usata una sola famiglia di metafore, senza elenchi di 3-4 oggetti in fila con la stessa struttura? 5) c'è una svolta narrativa reale e un finale che ricontestualizza, non la stessa idea ripetuta con parole diverse? Se trovi anche una sola violazione, riscrivi le parti coinvolte finché rispettano tutti i punti. Poi fornisci solo la versione finale corretta e completa nei due blocchi Suno, senza elencare separatamente le correzioni fatte.",
+    preferReasoningModel: true,
     mechanicalChecks: {
       bannedWords: ['cuore', 'cuori', 'stelle', 'stella', 'lacrime', 'lacrima', 'fuoco', 'pioggia', 'notte', 'notti', 'silenzio', 'silenzi'],
       overloadWords: ['ping', 'buffer', 'cache', 'login', 'thread', 'loop', 'script', 'firmware', 'ack', '404', 'uptime', 'router', 'reset', 'notifica', 'processo', 'algoritmo', 'server', 'wifi', 'wi-fi', 'gps', 'compila', 'compilare', 'byte', 'bit', 'log', 'commit', 'app', 'device', 'schermo', 'display', 'console', 'file', 'cartella', 'codec', 'patch', 'changelog', 'offline', 'online', 'segnale', 'connessione', 'digitale', 'pixel', 'glitch', 'virtuale', 'simulacro', 'hub', 'rete', 'vocoder', 'static', 'finestra', 'invisibile'],
