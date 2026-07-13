@@ -192,7 +192,10 @@ type MechanicalChecks = {
 // regolarità). Questo controllo è deterministico e non dipende dal giudizio del modello.
 function scanMechanicalViolations(text: string, checks: MechanicalChecks): string[] {
   const violations: string[] = [];
-  const lower = text.toLowerCase();
+  // Solo il blocco Lyrics: nel blocco Style parole come "glitch" o "batteria" sono
+  // termini legittimi di produzione/strumentazione, non metafore nel testo cantato.
+  const lyricsOnly = text.split(/PROMPT STYLE/i)[0];
+  const lower = lyricsOnly.toLowerCase();
 
   for (const word of checks.bannedWords) {
     const escaped = word.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
