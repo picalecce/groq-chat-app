@@ -633,7 +633,7 @@ export default function Chat() {
             {error && (
               <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-red-100 px-3 py-2 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
                 <span>
-                  Errore: {error.message}
+                  Errore: {error.message?.trim() || 'i modelli sono momentaneamente saturi, riprova tra qualche secondo.'}
                   {retryCooldown && ' — riprova tra un attimo'}
                 </span>
                 <button
