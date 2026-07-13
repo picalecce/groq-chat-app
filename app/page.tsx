@@ -50,6 +50,7 @@ export default function Chat() {
   const [chapterMenuOpen, setChapterMenuOpen] = useState(false);
   const [referenceMenuOpen, setReferenceMenuOpen] = useState(false);
   const [showNewChapterForm, setShowNewChapterForm] = useState(false);
+  const [chapterPendingDeleteId, setChapterPendingDeleteId] = useState<string | null>(null);
   const [newChapterName, setNewChapterName] = useState('');
   const [pendingFiles, setPendingFiles] = useState<FileUIPart[]>([]);
   const [attaching, setAttaching] = useState(false);
@@ -196,6 +197,7 @@ export default function Chat() {
     const chapter = chapters.find((c) => c.id === id);
     setMessages(chapter ? chapter.messages : []);
     setChapterMenuOpen(false);
+    setChapterPendingDeleteId(null);
   }
 
   function createChapter() {
@@ -218,16 +220,17 @@ export default function Chat() {
     setNewChapterName('');
     setShowNewChapterForm(false);
     setChapterMenuOpen(false);
+    setChapterPendingDeleteId(null);
   }
 
   function deleteChapter(id: string) {
-    if (!confirm('Eliminare questo capitolo e tutta la sua cronologia?')) return;
     const updated = chapters.filter((c) => c.id !== id);
     setChapters(updated);
     saveChapters(activePersonaId, updated);
+    setChapterPendingDeleteId(null);
     if (activeChapterId === id) {
       stop();
-    if (error) clearError();
+      if (error) clearError();
       const next = updated[0]?.id ?? null;
       setActiveChapterIdState(next);
       if (next) persistActiveChapterId(activePersonaId, next);
@@ -424,7 +427,10 @@ export default function Chat() {
           <div className="flex items-start gap-2 border-t border-zinc-100 px-4 py-2 dark:border-zinc-900">
           <div className="relative">
             <button
-              onClick={() => setChapterMenuOpen((v) => !v)}
+              onClick={() => {
+                setChapterMenuOpen((v) => !v);
+                setChapterPendingDeleteId(null);
+              }}
               className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
             >
               📑 {activeChapter ? activeChapter.title : 'Nessun capitolo'} ▾
@@ -432,30 +438,53 @@ export default function Chat() {
 
             {chapterMenuOpen && (
               <div className="absolute left-4 top-10 z-10 w-64 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
-                {chapters.map((chapter) => (
-                  <div
-                    key={chapter.id}
-                    className={`flex items-center justify-between rounded-lg px-2 py-1.5 text-sm ${
-                      chapter.id === activeChapterId
-                        ? 'bg-zinc-100 dark:bg-zinc-800'
-                        : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                    }`}
-                  >
-                    <button
-                      onClick={() => selectChapter(chapter.id)}
-                      className="flex-1 truncate text-left text-zinc-800 dark:text-zinc-200"
+                {chapters.map((chapter) =>
+                  chapterPendingDeleteId === chapter.id ? (
+                    <div
+                      key={chapter.id}
+                      className="flex items-center justify-between gap-2 rounded-lg bg-red-50 px-2 py-1.5 text-sm dark:bg-red-950"
                     >
-                      {chapter.title}
-                    </button>
-                    <button
-                      onClick={() => deleteChapter(chapter.id)}
-                      className="ml-2 text-zinc-400 hover:text-red-600"
-                      title="Elimina capitolo"
+                      <span className="flex-1 truncate text-red-700 dark:text-red-300">
+                        Eliminare &ldquo;{chapter.title}&rdquo;?
+                      </span>
+                      <button
+                        onClick={() => deleteChapter(chapter.id)}
+                        className="shrink-0 rounded-lg bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700"
+                      >
+                        Elimina
+                      </button>
+                      <button
+                        onClick={() => setChapterPendingDeleteId(null)}
+                        className="shrink-0 rounded-lg px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                      >
+                        Annulla
+                      </button>
+                    </div>
+                  ) : (
+                    <div
+                      key={chapter.id}
+                      className={`flex items-center justify-between rounded-lg px-2 py-1.5 text-sm ${
+                        chapter.id === activeChapterId
+                          ? 'bg-zinc-100 dark:bg-zinc-800'
+                          : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                      }`}
                     >
-                      ✕
-                    </button>
-                  </div>
-                ))}
+                      <button
+                        onClick={() => selectChapter(chapter.id)}
+                        className="flex-1 truncate text-left text-zinc-800 dark:text-zinc-200"
+                      >
+                        {chapter.title}
+                      </button>
+                      <button
+                        onClick={() => setChapterPendingDeleteId(chapter.id)}
+                        className="ml-2 shrink-0 rounded-lg px-1.5 py-0.5 text-zinc-400 hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-950"
+                        title="Elimina capitolo"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ),
+                )}
 
                 {showNewChapterForm ? (
                   <div className="mt-2 flex gap-1">
